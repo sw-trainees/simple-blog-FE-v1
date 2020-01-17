@@ -6,6 +6,6 @@ phases:
     commands:
   build:
     commands:
-      - aws s3 sync www "s3://${BUCKET_NAME}" --acl bucket-owner-full-control --acl public-read --delete --cache-control "max-age=1"
+      - aws s3 sync www/. "s3://${BUCKET_NAME}" --acl bucket-owner-full-control --acl public-read --delete --cache-control "max-age=1"
   post_build:
     commands:
