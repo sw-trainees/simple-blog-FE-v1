@@ -1,1 +1,3 @@
 # simple-blog
+
+Coming soon!
