@@ -1,0 +1,271 @@
+AWSTemplateFormatVersion: 2010-09-09
+
+Parameters:
+
+  ApexDomainName:
+    Description: Domain name for your website (example.com)
+    Type: String
+    Default: sw-trainees-blog
+
+  SiteName:
+    Description: >-
+      Name of your website (example).  Only alphanumeric characters, dash,
+      and underscore are supported. Do not include the top-level domain. 
+    Type: String
+    Default: sw-trainees-blog
+
+  GitHubUserName: 
+    Description:  Username for Github Account
+    Type: String
+    Default: sw-trainees
+
+  GitHubRepoName:
+    Description:  Name of the Github Repository
+    Type: String
+    Default: simple-blog-FE-v1
+    
+  GitHubProdBranchName:
+    Description: Name of the Production Branch
+    Type: String
+    Default: master
+
+  GitHubDevBranchName:
+    Description: Name of the Development Branch
+    Type: String
+    Default: dev
+
+Resources:
+
+  ProdBucket:
+    Type: 'AWS::S3::Bucket'
+    Properties:
+      BucketName: !Ref ApexDomainName
+      AccessControl: PublicRead
+      WebsiteConfiguration:
+        IndexDocument: index.html
+        ErrorDocument: 404.html
+
+  DevBucket:
+    Type: 'AWS::S3::Bucket'
+    Properties:
+      BucketName: !Join 
+        - ''
+        - - dev.
+          - !Ref ApexDomainName
+      AccessControl: PublicRead
+      WebsiteConfiguration:
+        IndexDocument: index.html
+        ErrorDocument: 404.html
+
+  ArtifactBucket:
+    Type: 'AWS::S3::Bucket'
+    Properties:
+      AccessControl: Private
+
+  CodeBuildProd:
+    Type: 'AWS::CodeBuild::Project'
+    Properties:
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: 'aws/codebuild/ubuntu-base:14.04'
+        Type: LINUX_CONTAINER
+        EnvironmentVariables:
+          - Name: BUCKET_NAME
+            Value: !Ref ProdBucket
+      Name: !Join 
+        - _
+        - - !Ref SiteName
+          - Root_Build
+      ServiceRole: !Ref CodeBuildRole
+      Source:
+        Type: CODEPIPELINE
+      TimeoutInMinutes: 10
+
+  CodeBuildDev:
+    Type: 'AWS::CodeBuild::Project'
+    Properties:
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: 'aws/codebuild/ubuntu-base:14.04'
+        Type: LINUX_CONTAINER
+        EnvironmentVariables:
+          - Name: BUCKET_NAME
+            Value: !Ref DevBucket
+      Name: !Join 
+        - _
+        - - !Ref SiteName
+          - Dev_Build
+      ServiceRole: !Ref CodeBuildRole
+      Source:
+        Type: CODEPIPELINE
+      TimeoutInMinutes: 10
+
+  CodeBuildRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Sid: ''
+            Effect: Allow
+            Principal:
+              Service:
+                - codebuild.amazonaws.com
+            Action: 'sts:AssumeRole'
+      Path: /
+  CodeBuildRolePolicy:
+    Type: 'AWS::IAM::Policy'
+    Properties:
+      PolicyName: CodeBuildRolePolicy
+      PolicyDocument:
+        Statement:
+          - Effect: Allow
+            Resource:
+              - !Sub >-
+                arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/*
+            Action:
+              - 'logs:CreateLogGroup'
+              - 'logs:CreateLogStream'
+              - 'logs:PutLogEvents'
+          - Effect: Allow
+            Resource:
+              - !Sub 'arn:aws:s3:::${ArtifactBucket}'
+              - !Sub 'arn:aws:s3:::${ArtifactBucket}/*'
+              - !Sub 'arn:aws:s3:::${ProdBucket}'
+              - !Sub 'arn:aws:s3:::${ProdBucket}/*'
+              - !Sub 'arn:aws:s3:::${DevBucket}'
+              - !Sub 'arn:aws:s3:::${DevBucket}/*'
+            Action:
+              - 's3:*'
+      Roles:
+        - !Ref CodeBuildRole
+
+  CodePipelineProd:
+    Type: 'AWS::CodePipeline::Pipeline'
+    Properties:
+      RoleArn: !GetAtt 
+        - CodePipelineRole
+        - Arn
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: SourceAction
+              ActionTypeId:
+                Category: Source
+                Owner: ThirdParty
+                Version: '1'
+                Provider: GitHub
+              OutputArtifacts:
+                - Name: StaticSiteSource
+              Configuration:
+                Owner: !Ref GitHubUserName
+                Repo: !Ref GitHubRepoName
+                Branch: !Ref GitHubProdBranchName
+                OAuthToken: "{{resolve:secretsmanager:GitHubCICD:SecretString:GitHubPersonalAccessToken}}"
+              RunOrder: 1
+        - Name: Build
+          Actions:
+            - Name: BuildRoot
+              InputArtifacts:
+                - Name: StaticSiteSource
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Version: '1'
+                Provider: CodeBuild
+              Configuration:
+                ProjectName: !Ref CodeBuildProd
+              RunOrder: 1
+      ArtifactStore:
+        Type: S3
+        Location: !Ref ArtifactBucket
+
+  CodePipelineDev:
+    Type: 'AWS::CodePipeline::Pipeline'
+    Properties:
+      RoleArn: !GetAtt 
+        - CodePipelineRole
+        - Arn
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: SourceAction
+              ActionTypeId:
+                Category: Source
+                Owner: ThirdParty
+                Version: '1'
+                Provider: GitHub
+              OutputArtifacts:
+                - Name: StaticSiteSource
+              Configuration:
+                Owner: !Ref GitHubUserName  
+                Repo: !Ref  GitHubRepoName
+                Branch: !Ref GitHubDevBranchName
+                OAuthToken: "{{resolve:secretsmanager:GitHubCICD:SecretString:GitHubPersonalAccessToken}}"
+              RunOrder: 1
+        - Name: Build
+          Actions:
+            - Name: BuildDev
+              InputArtifacts:
+                - Name: StaticSiteSource
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Version: '1'
+                Provider: CodeBuild
+              Configuration:
+                ProjectName: !Ref CodeBuildDev
+              RunOrder: 1
+      ArtifactStore:
+        Type: S3
+        Location: !Ref ArtifactBucket
+
+  CodePipelineRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Sid: ''
+            Effect: Allow
+            Principal:
+              Service:
+                - codepipeline.amazonaws.com
+            Action: 'sts:AssumeRole'
+      Path: /
+  CodePipelineRolePolicy:
+    Type: 'AWS::IAM::Policy'
+    Properties:
+      PolicyName: CodePipelineRolePolicy
+      PolicyDocument:
+        Statement:
+          - Action:
+              - 's3:GetObject'
+              - 's3:GetObjectVersion'
+              - 's3:GetBucketVersioning'
+            Resource: '*'
+            Effect: Allow
+          - Action: 
+              - 'secretsmanager:GetSecretValue'
+            Resource: '*'
+            Effect: Allow
+          - Action:
+              - 's3:PutObject'
+            Resource:
+              - !Sub 'arn:aws:s3:::${ArtifactBucket}'
+              - !Sub 'arn:aws:s3:::${ArtifactBucket}/*'
+            Effect: Allow
+          - Action:
+              - 'codebuild:BatchGetBuilds'
+              - 'codebuild:StartBuild'
+            Resource: '*'
+            Effect: Allow
+      Roles:
+        - !Ref CodePipelineRole
+
+Outputs:
+  WebsiteURL:
+    Description: URL to S3 Bucket Endpoint
+    Value: !Join [ "", [ !Ref ApexDomainName, ".s3-website-", !Ref "AWS::Region", ".amazonaws.com" ] ] 
